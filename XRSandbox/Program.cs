@@ -2,6 +2,7 @@
 using System.Globalization;
 using System.Runtime.InteropServices;
 using Serilog;
+using Silk.NET.Core.Native;
 using Silk.NET.OpenXR;
 using Silk.NET.OpenXR.Extensions.HTCX;
 
@@ -30,6 +31,7 @@ var xr = XR.GetApi();
 
 HtcxViveTrackerInteraction htcx;// = new HtcxViveTrackerInteraction(xr.Context);
 
+var session = new Session();
 unsafe {
     ISet<string> supportedExtensions = new HashSet<string>();
 
@@ -56,11 +58,11 @@ unsafe {
     };
 
     var extensions = new List<string>();
-    // if (supportedExtensions.Contains("XR_MND_headless")) {
-    //     extensions.Add("XR_MND_headless");
-    // } else {
-    //     Log.Error("[{LogTag}] XR_MND_headless extension not supported!", "OpenXR");
-    // }
+    if (supportedExtensions.Contains("XR_MND_headless")) {
+        extensions.Add("XR_MND_headless");
+    } else {
+        Log.Error("[{LogTag}] XR_MND_headless extension not supported!", "OpenXR");
+    }
     if (supportedExtensions.Contains("XR_HTCX_vive_tracker_interaction")) {
         extensions.Add("XR_HTCX_vive_tracker_interaction");
     } else {
@@ -109,6 +111,64 @@ unsafe {
     Log.Information("[{LogTag}][System] Name={Name}", "OpenXR", systemName);
     
     foreach (var ansiExtension in ansiExtensions) { Marshal.FreeHGlobal(ansiExtension); }
+
+    var sessionCreateInfo = stackalloc SessionCreateInfo[1];
+    sessionCreateInfo->Type = StructureType.SessionCreateInfo;
+    sessionCreateInfo->Next = null;
+    sessionCreateInfo->SystemId = systemId;
+
+    xr.CreateSession(instance, sessionCreateInfo, ref session);
+
+    ActionSetCreateInfo actionSetInfo = new() {
+        Type = StructureType.ActionSetCreateInfo,
+        Priority = 0,
+    };
+    
+    var actionSetName = new Span<byte>(actionSetInfo.ActionSetName, 64);
+    SilkMarshal.StringIntoSpan("tracker_actions", actionSetName);
+    var localizedName = new Span<byte>(actionSetInfo.LocalizedActionSetName, 128);
+    SilkMarshal.StringIntoSpan("Tracker Input", localizedName);
+
+    ActionSet actionSet;
+    xr.CreateActionSet(instance, &actionSetInfo, &actionSet);
+    
+    Silk.NET.OpenXR.Action trackerPoseAction;
+    
+    ActionCreateInfo actionInfo = new() {
+        Type = StructureType.ActionCreateInfo,
+        ActionType = ActionType.PoseInput,
+    };
+
+    var actionNameSpan = new Span<byte>(actionInfo.ActionName, 64);
+    SilkMarshal.StringIntoSpan("tracker_pose", actionNameSpan);
+    var localizedActionNameSpan = new Span<byte>(actionInfo.LocalizedActionName, 128);
+    SilkMarshal.StringIntoSpan("Tracker Pose", localizedActionNameSpan);
+    
+    actionInfo.CountSubactionPaths = 1;
+    // TODO: pick this up here
+    xr.StringToPath(instance, "TODO: pick this up here", &actionInfo.SubactionPaths[0]);
+    
+    xr.CreateAction(actionSet, &actionInfo, &trackerPoseAction);
+    
+    SessionBeginInfo beginInfo = new()
+    {
+        Type = StructureType.SessionBeginInfo,
+        PrimaryViewConfigurationType = ViewConfigurationType.None
+    };
+
+    xr.BeginSession(session, &beginInfo);
+    
+        
+    SessionActionSetsAttachInfo attachInfo = new()
+    {
+        Type = StructureType.SessionActionSetsAttachInfo,
+        CountActionSets = 1,
+        ActionSets = &actionSet,
+    };
+
+    xr.AttachSessionActionSets(session, &attachInfo);
+
+    
 }
 
 var inputQueue = new ConcurrentQueue<string>();
@@ -137,6 +197,14 @@ void ThreadFunc() {
                 return;
             } else if (input == "list") {
                 unsafe {
+                    var syncInfo = stackalloc ActionsSyncInfo [1];
+                    syncInfo->Type = StructureType.ActionsSyncInfo;
+                    syncInfo->Next = null;
+                    syncInfo->CountActiveActionSets = 0;
+                    syncInfo->ActiveActionSets = null;
+                    xr.SyncAction(session, syncInfo);
+
+                    
                     var i = xr.CurrentInstance.Value;
                     
                     var span = stackalloc ViveTrackerPathsHTCX[11];
